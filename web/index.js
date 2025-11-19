@@ -22,6 +22,26 @@ const app = express();
 // Add JSON parsing
 app.use(express.json());
 
+// Add this near the top of your index.js, after creating the app
+app.use((req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization');
+  
+  if (req.method === 'OPTIONS') {
+    res.sendStatus(200);
+  } else {
+    next();
+  }
+});
+```
+
+## Step 2: Test Direct URL Instead
+
+For now, let's test directly. Visit this URL in a new browser tab:
+```
+https://giving-thermometer.onrender.com/api/webhooks/health
+
 // Set up Shopify authentication
 app.get(shopify.config.auth.path, shopify.auth.begin());
 app.get(

@@ -1,12 +1,8 @@
-# Learn more about configuring your app at https://shopify.dev/docs/apps/tools/cli/configuration
 client_id = "28d3d18e9b32b86c87bccee2a54228cc"
 name = "Giving Thermometer"
-handle = "giving-thermometer" 
-application_url = "https://giving-thermometer.shopifyapps.com"  # Update this line
+handle = "giving-thermometer"
+application_url = "https://giving-thermometer.onrender.com"
 embedded = true
-
-[build]
-automatically_update_urls_on_dev = true
 
 [webhooks]
 api_version = "2025-10"
@@ -21,4 +17,4 @@ optional_scopes = [ ]
 use_legacy_install_flow = false
 
 [auth]
-redirect_urls = [ ]
+redirect_urls = [ "https://giving-thermometer.onrender.com/auth/callback" ]
