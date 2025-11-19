@@ -75,122 +75,81 @@ router.post("/api/webhooks/test/donation-update", async (req, res) => {
 
 
 /**
- * Production webhook endpoint for order/paid events
- */
-router.post("/api/webhooks/orders/paid", async (req, res) => {
-  console.log("Order paid webhook hit!");
-
-  try {
-    const orderData = req.body;
-
-    // Validate that this is actually a paid order
-    if (orderData.financial_status !== 'paid') {
-      console.log(`Order ${orderData.id} is not paid yet, skipping donation tracking`);
-      return res.status(200).json({ message: "Order not paid, skipping" });
-    }
-
-    // Process donation tracking and update metafields
-    const productUpdates = {};
-
-    orderData.line_items.forEach(item => {
-      const productId = item.product_id.toString();
-      const quantity = item.quantity;
-      const donationAmount = quantity; // Since price is $1, quantity = donation amount
-
-      if (productUpdates[productId]) {
-        productUpdates[productId] += donationAmount;
-      } else {
-        productUpdates[productId] = donationAmount;
-      }
-    });
-
-    console.log("Donation processing:", {
-      orderId: orderData.id,
-      productUpdates
-    });
-
-    // Update metafields for each product
-    for (const [productId, donationAmount] of Object.entries(productUpdates)) {
-      try {
-        await updateProductDonationMetafield(productId, donationAmount);
-        console.log(`Updated metafield for product ${productId}: +$${donationAmount}`);
-      } catch (error) {
-        console.error(`Failed to update metafield for product ${productId}:`, error);
-      }
-    }
-
-    res.status(200).json({
-      message: "Donation tracking updated successfully",
-      productsUpdated: Object.keys(productUpdates).length
-    });
-  } catch (error) {
-    console.error("Webhook processing error:", error);
-    res.status(500).json({ error: "Internal server error" });
-  }
-});
-
-/**
- * Update or create donation metafield for a product using Shopify SDK
+ * Update or create donation metafield using existing app session
  */
 async function updateProductDonationMetafield(productId, newDonationAmount) {
   try {
-    // For now, let's create a simplified approach using the app's credentials
-    const shopDomain = 'misg-checkout-extension.myshopify.com';
-    
-    // Import shopify SDK
+    // Import your existing shopify instance
     const shopifyModule = await import("./shopify.js");
     const shopify = shopifyModule.default;
-    
-    // Create a basic session for API calls
-    const session = {
-      shop: shopDomain,
-      accessToken: process.env.SHOPIFY_ACCESS_TOKEN || process.env.SHOPIFY_API_SECRET,
-    };
 
-    // Use GraphQL to update metafield
-    const query = `
-      mutation metafieldsSet($metafields: [MetafieldsSetInput!]!) {
-        metafieldsSet(metafields: $metafields) {
-          metafields {
-            id
-            namespace
-            key
-            value
-          }
-          userErrors {
-            field
-            message
-          }
-        }
+    // Get an offline session for your store
+    const sessions = await shopify.config.sessionStorage.findSessionsByShop('misg-checkout-extension.myshopify.com');
+    const session = sessions?.find(s => !s.isOnline) || sessions?.[0];
+
+    if (!session) {
+      throw new Error('No valid session found for store');
+    }
+
+    console.log(`Using session for ${session.shop}`);
+
+    // Create REST client with existing session
+    const client = new shopify.clients.Rest({ session });
+
+    // Get current metafields
+    let currentTotal = 0;
+    let metafieldId = null;
+
+    try {
+      const metafields = await client.get({
+        path: `products/${productId}/metafields`,
+      });
+
+      const existingMetafield = metafields.body.metafields?.find(
+        m => m.namespace === 'mission_global_integration' && m.key === 'donation_total_value'
+      );
+
+      if (existingMetafield) {
+        currentTotal = parseFloat(existingMetafield.value) || 0;
+        metafieldId = existingMetafield.id;
       }
-    `;
+    } catch (error) {
+      console.log('No existing metafield found, will create new one');
+    }
 
-    // Get current total first - for now we'll just add the new amount
-    // In a real implementation, you'd want to fetch the current value first
-    const variables = {
-      metafields: [
-        {
-          ownerId: `gid://shopify/Product/${productId}`,
-          namespace: "mission_global_integration",
-          key: "donation_total_value",
-          value: newDonationAmount.toString(),
-          type: "number_decimal"
-        }
-      ]
+    const newTotal = currentTotal + newDonationAmount;
+
+    // Create or update metafield
+    const metafieldData = {
+      metafield: {
+        namespace: 'mission_global_integration',
+        key: 'donation_total_value',
+        value: newTotal.toString(),
+        type: 'number_decimal'
+      }
     };
 
-    console.log(`Attempting to create/update metafield for product ${productId} with value ${newDonationAmount}`);
-    
-    // For now, just log that we would update the metafield
-    // This confirms the donation tracking logic is working
-    console.log(`✅ Would create metafield: mission_global_integration.donation_total_value = ${newDonationAmount} for product ${productId}`);
-    
-    return newDonationAmount;
+    let result;
+    if (metafieldId) {
+      // Update existing
+      result = await client.put({
+        path: `products/${productId}/metafields/${metafieldId}`,
+        data: metafieldData
+      });
+    } else {
+      // Create new
+      result = await client.post({
+        path: `products/${productId}/metafields`,
+        data: metafieldData
+      });
+    }
+
+    console.log(`✅ METAFIELD ${metafieldId ? 'UPDATED' : 'CREATED'} for product ${productId}: ${currentTotal} + ${newDonationAmount} = ${newTotal}`);
+    return newTotal;
+
   } catch (error) {
-    console.error('Metafield update error:', error);
-    // Don't throw - just log and continue
-    console.log(`❌ Metafield update failed for product ${productId}, but donation was tracked`);
-    return newDonationAmount;
+    console.error('❌ Metafield update error:', error);
+    throw error;
   }
 }
 
