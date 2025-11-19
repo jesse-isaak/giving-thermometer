@@ -79,10 +79,10 @@ router.post("/api/webhooks/test/donation-update", async (req, res) => {
  */
 router.post("/api/webhooks/orders/paid", async (req, res) => {
   console.log("Order paid webhook hit!");
-  
+
   try {
     const orderData = req.body;
-    
+
     // Validate that this is actually a paid order
     if (orderData.financial_status !== 'paid') {
       console.log(`Order ${orderData.id} is not paid yet, skipping donation tracking`);
@@ -96,7 +96,7 @@ router.post("/api/webhooks/orders/paid", async (req, res) => {
       const productId = item.product_id.toString();
       const quantity = item.quantity;
       const donationAmount = quantity; // Since price is $1, quantity = donation amount
-      
+
       if (productUpdates[productId]) {
         productUpdates[productId] += donationAmount;
       } else {
@@ -118,8 +118,8 @@ router.post("/api/webhooks/orders/paid", async (req, res) => {
         console.error(`Failed to update metafield for product ${productId}:`, error);
       }
     }
-    
-    res.status(200).json({ 
+
+    res.status(200).json({
       message: "Donation tracking updated successfully",
       productsUpdated: Object.keys(productUpdates).length
     });
@@ -137,30 +137,37 @@ async function updateProductDonationMetafield(productId, newDonationAmount) {
     const shopDomain = 'misg-checkout-extension.myshopify.com';
     const apiKey = process.env.SHOPIFY_API_KEY;
     const apiPassword = process.env.SHOPIFY_API_SECRET;
-    
+
+    // Create authorization header
+    const auth = Buffer.from(`${apiKey}:${apiPassword}`).toString('base64');
+    const headers = {
+      'Content-Type': 'application/json',
+      'Authorization': `Basic ${auth}`
+    };
+
     // Get current metafield value
-    const getUrl = `https://${apiKey}:${apiPassword}@${shopDomain}/admin/api/2023-10/products/${productId}/metafields.json`;
-    
-    const getResponse = await fetch(getUrl);
+    const getUrl = `https://${shopDomain}/admin/api/2023-10/products/${productId}/metafields.json`;
+
+    const getResponse = await fetch(getUrl, { headers });
     const currentMetafields = await getResponse.json();
-    
+
     let currentTotal = 0;
     let metafieldId = null;
-    
+
     // Find existing donation metafield
     if (currentMetafields.metafields) {
       const existingMetafield = currentMetafields.metafields.find(
         m => m.namespace === 'mission_global_integration' && m.key === 'donation_total_value'
       );
-      
+
       if (existingMetafield) {
         currentTotal = parseFloat(existingMetafield.value) || 0;
         metafieldId = existingMetafield.id;
       }
     }
-    
+
     const newTotal = currentTotal + newDonationAmount;
-    
+
     // Create or update metafield
     const metafieldData = {
       metafield: {
@@ -170,33 +177,32 @@ async function updateProductDonationMetafield(productId, newDonationAmount) {
         type: 'number_decimal'
       }
     };
-    
+
     let updateUrl, method;
     if (metafieldId) {
       // Update existing metafield
-      updateUrl = `https://${apiKey}:${apiPassword}@${shopDomain}/admin/api/2023-10/products/${productId}/metafields/${metafieldId}.json`;
+      updateUrl = `https://${shopDomain}/admin/api/2023-10/products/${productId}/metafields/${metafieldId}.json`;
       method = 'PUT';
     } else {
       // Create new metafield
-      updateUrl = `https://${apiKey}:${apiPassword}@${shopDomain}/admin/api/2023-10/products/${productId}/metafields.json`;
+      updateUrl = `https://${shopDomain}/admin/api/2023-10/products/${productId}/metafields.json`;
       method = 'POST';
     }
-    
+
     const updateResponse = await fetch(updateUrl, {
       method: method,
-      headers: {
-        'Content-Type': 'application/json',
-      },
+      headers: headers,
       body: JSON.stringify(metafieldData)
     });
-    
+
     if (!updateResponse.ok) {
-      throw new Error(`Metafield update failed: ${updateResponse.status}`);
+      const errorText = await updateResponse.text();
+      throw new Error(`Metafield update failed: ${updateResponse.status} - ${errorText}`);
     }
-    
+
     const result = await updateResponse.json();
     console.log(`Metafield ${method === 'PUT' ? 'updated' : 'created'} for product ${productId}: ${currentTotal} + ${newDonationAmount} = ${newTotal}`);
-    
+
     return newTotal;
   } catch (error) {
     console.error('Metafield update error:', error);
