@@ -1,0 +1,35 @@
+{
+  "name": "giving-thermometer-backend",
+  "version": "1.0.0",
+  "description": "Mission Global donation tracking backend for Shopify",
+  "type": "module",
+  "main": "index.js",
+  "scripts": {
+    "dev": "cross-env NODE_ENV=development nodemon index.js --ignore ./frontend",
+    "build": "echo 'No build step needed for backend'",
+    "start": "cross-env NODE_ENV=production node index.js",
+    "test": "jest"
+  },
+  "dependencies": {
+    "@shopify/shopify-app-express": "^3.0.0",
+    "@shopify/shopify-app-session-storage-sqlite": "^2.0.0",
+    "@shopify/shopify-api": "^9.0.0",
+    "cross-env": "^7.0.3",
+    "express": "^4.18.2",
+    "serve-static": "^1.15.0",
+    "dotenv": "^16.0.3"
+  },
+  "devDependencies": {
+    "jest": "^29.5.0",
+    "nodemon": "^3.0.2"
+  },
+  "keywords": [
+    "shopify",
+    "donations",
+    "mission-global",
+    "charity",
+    "fundraising"
+  ],
+  "author": "Mission Global",
+  "license": "MIT"
+}

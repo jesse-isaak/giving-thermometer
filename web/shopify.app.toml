@@ -1,0 +1,24 @@
+# Learn more about configuring your app at https://shopify.dev/docs/apps/tools/cli/configuration
+client_id = "28d3d18e9b32b86c87bccee2a54228cc"
+name = "Giving Thermometer"
+handle = "giving-thermometer" 
+application_url = "https://giving-thermometer.shopifyapps.com"  # Update this line
+embedded = true
+
+[build]
+automatically_update_urls_on_dev = true
+
+[webhooks]
+api_version = "2025-10"
+
+[[webhooks.subscriptions]]
+topics = [ "orders/paid" ]
+uri = "/api/webhooks/orders/paid"
+
+[access_scopes]
+scopes = "read_orders,read_products,write_products"
+optional_scopes = [ ]
+use_legacy_install_flow = false
+
+[auth]
+redirect_urls = [ ]
