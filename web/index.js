@@ -22,7 +22,7 @@ const app = express();
 // Add JSON parsing
 app.use(express.json());
 
-// Add this near the top of your index.js, after creating the app
+// Add CORS headers
 app.use((req, res, next) => {
   res.header('Access-Control-Allow-Origin', '*');
   res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
@@ -34,13 +34,6 @@ app.use((req, res, next) => {
     next();
   }
 });
-```
-
-## Step 2: Test Direct URL Instead
-
-For now, let's test directly. Visit this URL in a new browser tab:
-```
-https://giving-thermometer.onrender.com/api/webhooks/health
 
 // Set up Shopify authentication
 app.get(shopify.config.auth.path, shopify.auth.begin());
@@ -51,10 +44,9 @@ app.get(
 );
 
 // Add your webhook routes BEFORE ensureInstalledOnShop
-// Add your webhook routes BEFORE ensureInstalledOnShop
 app.use(webhookRoutes);
 
-// Debug logging - add these lines:
+// Debug logging
 console.log('Webhook routes registered');
 console.log('Available routes:');
 app._router.stack.forEach(function(r){
@@ -105,9 +97,6 @@ app.post("/api/webhooks/register", shopify.ensureInstalledOnShop(), async (req, 
     res.status(500).json({ error: "Failed to register webhooks" });
   }
 });
-
-// REMOVE THIS LINE:
-// app.use("/api/*", shopify.ensureInstalledOnShop());
 
 // Serve static files from frontend
 app.use(shopify.cspHeaders());
