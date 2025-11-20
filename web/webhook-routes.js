@@ -1,11 +1,11 @@
 // webhook-routes.js - ES Module version for Shopify CLI
 import express from "express";
-import { handleOrderPaid, syncDonationForProduct } from "./webhook-handlers.js";
+import { handleOrderPaid, updateProductDonationTotal } from "./webhook-handlers.js";
 
 const router = express.Router();
 
 /**
- * Health check endpoint for webhooks
+ * Health check endpoint
  */
 router.get("/api/webhooks/health", (req, res) => {
   console.log("Health endpoint hit!");
@@ -17,7 +17,7 @@ router.get("/api/webhooks/health", (req, res) => {
 });
 
 /**
- * Simple test endpoint (no Shopify session required)
+ * Simple test endpoint
  */
 router.post("/api/webhooks/test/simple", async (req, res) => {
   console.log("Simple test endpoint hit!", req.body);
@@ -38,63 +38,15 @@ router.post("/api/webhooks/test/simple", async (req, res) => {
 });
 
 /**
- * Manual trigger endpoint for testing donation sync for a product.
- * This recomputes donation from product.totalSales and updates the metafield.
+ * Manual donation update for testing
  */
 router.post("/api/webhooks/test/donation-update", async (req, res) => {
   console.log("Test donation endpoint hit!", req.body);
 
   try {
-    const { productId } = req.body;
+    const { productId, donationAmount } = req.body;
 
-    if (!productId) {
+    if (!productId || !donationAmount) {
       return res.status(400).json({
-        error: "Missing required field: productId",
+        error: "Missing required fields: productId, donationAmount",
       });
-    }
-
-    const newTotal = await syncDonationForProduct(productId);
-
-    res.status(200).json({
-      message:
-        "Test donation sync successful (recomputed from product.totalSales)",
-      productId,
-      donationTotal: newTotal,
-    });
-  } catch (error) {
-    console.error("Test endpoint error:", error);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-/**
- * Real Shopify webhook endpoint:
- * Configure your `orders/paid` webhook to POST here.
- *
- * In shopify.app.toml:
- *   [[webhooks.subscriptions]]
- *   topics = ["orders/paid"]
- *   uri = "/api/webhooks/orders/paid"
- */
-router.post("/api/webhooks/orders/paid", async (req, res) => {
-  try {
-    console.log("🛎️ Order paid webhook hit!");
-    const orderData = req.body;
-
-    if (!orderData || !orderData.id) {
-      console.error("Invalid order payload:", orderData);
-      return res.status(400).send("Invalid payload");
-    }
-
-    await handleOrderPaid(orderData);
-
-    // Respond 200 quickly so Shopify doesn’t retry unnecessarily
-    res.status(200).send("ok");
-  } catch (error) {
-    console.error("❌ Error handling orders/paid webhook:", error);
-    // Let Shopify retry on 500 – but our handler is idempotent
-    res.status(500).send("Error");
-  }
-});
-
-export default router;
