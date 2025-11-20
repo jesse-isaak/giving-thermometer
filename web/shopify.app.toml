@@ -8,13 +8,13 @@ embedded = true
 api_version = "2025-10"
 
 [[webhooks.subscriptions]]
-topics = [ "orders/paid" ]
+topics = ["orders/paid"]
 uri = "/api/webhooks/orders/paid"
 
 [access_scopes]
 scopes = "read_orders,read_products,write_products"
-optional_scopes = [ ]
+optional_scopes = []
 use_legacy_install_flow = false
 
 [auth]
-redirect_urls = [ "https://giving-thermometer.onrender.com/api/auth/callback" ]
+redirect_urls = ["https://giving-thermometer.onrender.com/api/auth/callback"]

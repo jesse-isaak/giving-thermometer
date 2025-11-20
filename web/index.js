@@ -1,5 +1,6 @@
+// web/index.js
 import { join } from "path";
-import { readFileSync } from "fs";
+import { readFileSync, existsSync } from "fs";
 import express from "express";
 import serveStatic from "serve-static";
 import shopify from "./shopify.js";
@@ -7,123 +8,96 @@ import webhookRoutes from "./webhook-routes.js";
 import { handleAppInstallation } from "./installation-handler.js";
 import { getCurrentDonationTotal } from "./webhook-handlers.js";
 
-const PORT = parseInt(
-  process.env.BACKEND_PORT || process.env.PORT || "3000",
-  10
-);
+const PORT = parseInt(process.env.BACKEND_PORT || process.env.PORT || "3000", 10);
 
 const STATIC_PATH =
   process.env.NODE_ENV === "production"
     ? `${process.cwd()}/frontend/dist`
-    : `${process.cwd()}/frontend/`;
+    : `${process.cwd()}/frontend`;
 
 const app = express();
 
-// Global JSON parser (fine for our webhook route which uses JSON body)
 app.use(express.json());
 
-// Basic CORS
+// CORS
 app.use((req, res, next) => {
   res.header("Access-Control-Allow-Origin", "*");
-  res.header(
-    "Access-Control-Allow-Methods",
-    "GET, POST, PUT, DELETE, OPTIONS"
-  );
-  res.header(
-    "Access-Control-Allow-Headers",
-    "Origin, X-Requested-With, Content-Type, Accept, Authorization"
-  );
+  res.header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
+  res.header("Access-Control-Allow-Headers", "Origin, X-Requested-With, Content-Type, Accept, Authorization");
 
-  if (req.method === "OPTIONS") {
-    res.sendStatus(200);
-  } else {
-    next();
-  }
+  if (req.method === "OPTIONS") return res.sendStatus(200);
+  next();
 });
 
-// Shopify auth
-app.get(shopify.config.auth.path, shopify.auth.begin());
+// Auth routes
+app.get(shopify.config.auth.path, shopify.auth.begin({ isOnline: false }));
 app.get(
   shopify.config.auth.callbackPath,
-  shopify.auth.callback(),
+  shopify.auth.callback({ isOnline: false }),
   shopify.redirectToShopifyOrAppRoot()
 );
 
-// Our webhook + test routes
-app.use(webhookRoutes);
-
-// Debug logging for routes
-console.log("Webhook routes registered");
-console.log("Available routes:");
-app._router.stack.forEach(function (r) {
-  if (r.route && r.route.path) {
-    console.log("  Route:", r.route.methods, r.route.path);
-  } else if (r.name === "router") {
-    r.handle.stack.forEach(function (rr) {
-      if (rr.route) {
-        console.log("  Router route:", rr.route.methods, rr.route.path);
-      }
-    });
-  }
-});
-
-// Shopify webhook processing (you can still use this for other topics if desired)
+// Webhooks
 app.post(
   shopify.config.webhooks.path,
   shopify.processWebhooks({ webhookHandlers: {} })
 );
 
-// API route for getting donation totals (needs auth)
-app.get(
-  "/api/donation-total/:productId",
-  shopify.ensureInstalledOnShop(),
-  async (req, res) => {
-    try {
-      const { productId } = req.params;
+// Include webhook custom routes
+app.use(webhookRoutes);
 
-      // We no longer need the session for this, it’s read via Admin API token
-      const total = await getCurrentDonationTotal(productId);
+// --- TEMP ENDPOINT to create OFFLINE token manually ------
+app.get("/api/create-offline-token", shopify.ensureInstalledOnShop(), async (req, res) => {
+  try {
+    const session = res.locals.shopify.session;
 
-      res.status(200).json({
-        productId,
-        donationTotal: total,
-      });
-    } catch (error) {
-      console.error("Error getting donation total:", error);
-      res.status(500).json({ error: "Failed to get donation total" });
-    }
+    const offlineId = shopify.api.session.getOfflineId(session.shop);
+
+    const offlineSession = new shopify.api.session.Session({
+      id: offlineId,
+      shop: session.shop,
+      state: "",
+      isOnline: false,
+      scope: session.scope,
+      accessToken: session.accessToken,
+    });
+
+    await shopify.config.sessionStorage.storeSession(offlineSession);
+
+    res.status(200).json({ message: "Offline token saved successfully", session: offlineSession });
+  } catch (error) {
+    console.error("Error creating offline token:", error);
+    res.status(500).json({ error: error.message });
   }
-);
+});
 
-// Webhook registration endpoint (unchanged)
-app.post(
-  "/api/webhooks/register",
-  shopify.ensureInstalledOnShop(),
-  async (req, res) => {
-    try {
-      const session = res.locals.shopify.session;
+// Test endpoint to fetch donation totals
+app.get("/api/donation-total/:productId", shopify.ensureInstalledOnShop(), async (req, res) => {
+  try {
+    const { productId } = req.params;
+    const session = res.locals.shopify.session;
+    const total = await getCurrentDonationTotal(session, productId);
 
-      await handleAppInstallation(session);
-      res.status(200).json({ message: "Webhooks registered successfully" });
-    } catch (error) {
-      console.error("Webhook registration failed:", error);
-      res.status(500).json({ error: "Failed to register webhooks" });
-    }
+    res.status(200).json({ productId, donationTotal: total });
+  } catch (error) {
+    res.status(500).json({ error: "Failed to get donation total" });
   }
-);
+});
 
-// Static frontend
+// Serve static frontend (if exists)
 app.use(shopify.cspHeaders());
 app.use(serveStatic(STATIC_PATH, { index: false }));
 
-// Frontend catch-all
-app.use("/*", shopify.ensureInstalledOnShop(), async (_req, res, _next) => {
-  return res
-    .status(200)
-    .set("Content-Type", "text/html")
-    .send(readFileSync(join(STATIC_PATH, "index.html")));
+// Catch-all route for embedded UI
+app.use("/*", shopify.ensureInstalledOnShop(), async (_req, res) => {
+  const filePath = join(STATIC_PATH, "index.html");
+
+  if (!existsSync(filePath)) {
+    res.send(`<html><body><h1>Giving Thermometer Installed</h1><p>Frontend is not built yet.</p></body></html>`);
+  } else {
+    res.status(200).set("Content-Type", "text/html").send(readFileSync(filePath));
+  }
 });
 
-app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
-});
+// Start server
+app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
