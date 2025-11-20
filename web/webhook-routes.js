@@ -50,3 +50,42 @@ router.post("/api/webhooks/test/donation-update", async (req, res) => {
       return res.status(400).json({
         error: "Missing required fields: productId, donationAmount",
       });
+    }
+
+    const newTotal = await updateProductDonationTotal(productId, parseFloat(donationAmount));
+
+    res.status(200).json({
+      message: "Test donation update successful",
+      productId,
+      donationAmount,
+      newTotal,
+    });
+  } catch (error) {
+    console.error("Test endpoint error:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * Shopify orders/paid webhook handler
+ */
+router.post("/api/webhooks/orders/paid", async (req, res) => {
+  try {
+    console.log("🛎️ Order paid webhook hit!");
+    const orderData = req.body;
+
+    if (!orderData || !orderData.id) {
+      console.error("Invalid order payload:", orderData);
+      return res.status(400).send("Invalid payload");
+    }
+
+    await handleOrderPaid(orderData);
+
+    res.status(200).send("ok");
+  } catch (error) {
+    console.error("❌ Error handling orders/paid webhook:", error);
+    res.status(500).send("Error");
+  }
+});
+
+export default router;
