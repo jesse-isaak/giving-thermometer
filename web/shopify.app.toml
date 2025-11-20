@@ -17,4 +17,4 @@ optional_scopes = [ ]
 use_legacy_install_flow = false
 
 [auth]
-redirect_urls = [ "https://giving-thermometer.onrender.com/auth/callback" ]
+redirect_urls = [ "https://giving-thermometer.onrender.com/api/auth/callback" ]

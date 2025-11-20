@@ -1,6 +1,6 @@
 // webhook-routes.js - ES Module version for Shopify CLI
 import express from "express";
-import { handleOrderPaid } from "./webhook-handlers.js";
+import { handleOrderPaid, syncDonationForProduct } from "./webhook-handlers.js";
 
 const router = express.Router();
 
@@ -12,7 +12,7 @@ router.get("/api/webhooks/health", (req, res) => {
   res.status(200).json({
     status: "healthy",
     timestamp: new Date().toISOString(),
-    service: "mission-global-donation-tracker"
+    service: "mission-global-donation-tracker",
   });
 });
 
@@ -25,12 +25,11 @@ router.post("/api/webhooks/test/simple", async (req, res) => {
   try {
     const { productId, donationAmount } = req.body;
 
-    // Just return a mock response for testing
     res.status(200).json({
       message: "Simple test successful - no Shopify API calls made",
       productId,
       donationAmount: parseFloat(donationAmount),
-      mockTotal: parseFloat(donationAmount)
+      mockTotal: parseFloat(donationAmount),
     });
   } catch (error) {
     console.error("Simple test error:", error);
@@ -39,33 +38,28 @@ router.post("/api/webhooks/test/simple", async (req, res) => {
 });
 
 /**
- * Manual trigger endpoint for testing
+ * Manual trigger endpoint for testing donation sync for a product.
+ * This recomputes donation from product.totalSales and updates the metafield.
  */
 router.post("/api/webhooks/test/donation-update", async (req, res) => {
   console.log("Test donation endpoint hit!", req.body);
 
   try {
-    const { productId, donationAmount, shopDomain } = req.body;
+    const { productId } = req.body;
 
-    if (!productId || !donationAmount || !shopDomain) {
+    if (!productId) {
       return res.status(400).json({
-        error: "Missing required fields: productId, donationAmount, shopDomain"
+        error: "Missing required field: productId",
       });
     }
 
-    const session = await getSessionForShop(shopDomain);
-    if (!session) {
-      return res.status(401).json({ error: "Unauthorized" });
-    }
-
-    const { updateProductDonationTotal } = await import("./webhook-handlers.js");
-    const newTotal = await updateProductDonationTotal(session, productId, parseFloat(donationAmount));
+    const newTotal = await syncDonationForProduct(productId);
 
     res.status(200).json({
-      message: "Test donation update successful",
+      message:
+        "Test donation sync successful (recomputed from product.totalSales)",
       productId,
-      donationAmount: parseFloat(donationAmount),
-      newTotal
+      donationTotal: newTotal,
     });
   } catch (error) {
     console.error("Test endpoint error:", error);
@@ -73,110 +67,34 @@ router.post("/api/webhooks/test/donation-update", async (req, res) => {
   }
 });
 
-
 /**
- * Update or create donation metafield using existing app session
+ * Real Shopify webhook endpoint:
+ * Configure your `orders/paid` webhook to POST here.
+ *
+ * In shopify.app.toml:
+ *   [[webhooks.subscriptions]]
+ *   topics = ["orders/paid"]
+ *   uri = "/api/webhooks/orders/paid"
  */
-async function updateProductDonationMetafield(productId, newDonationAmount) {
+router.post("/api/webhooks/orders/paid", async (req, res) => {
   try {
-    // Import your existing shopify instance
-    const shopifyModule = await import("./shopify.js");
-    const shopify = shopifyModule.default;
+    console.log("🛎️ Order paid webhook hit!");
+    const orderData = req.body;
 
-    // Get an offline session for your store
-    const sessions = await shopify.config.sessionStorage.findSessionsByShop('misg-checkout-extension.myshopify.com');
-    const session = sessions?.find(s => !s.isOnline) || sessions?.[0];
-
-    if (!session) {
-      throw new Error('No valid session found for store');
+    if (!orderData || !orderData.id) {
+      console.error("Invalid order payload:", orderData);
+      return res.status(400).send("Invalid payload");
     }
 
-    console.log(`Using session for ${session.shop}`);
+    await handleOrderPaid(orderData);
 
-    // Create REST client with existing session
-    const client = new shopify.clients.Rest({ session });
-
-    // Get current metafields
-    let currentTotal = 0;
-    let metafieldId = null;
-
-    try {
-      const metafields = await client.get({
-        path: `products/${productId}/metafields`,
-      });
-
-      const existingMetafield = metafields.body.metafields?.find(
-        m => m.namespace === 'mission_global_integration' && m.key === 'donation_total_value'
-      );
-
-      if (existingMetafield) {
-        currentTotal = parseFloat(existingMetafield.value) || 0;
-        metafieldId = existingMetafield.id;
-      }
-    } catch (error) {
-      console.log('No existing metafield found, will create new one');
-    }
-
-    const newTotal = currentTotal + newDonationAmount;
-
-    // Create or update metafield
-    const metafieldData = {
-      metafield: {
-        namespace: 'mission_global_integration',
-        key: 'donation_total_value',
-        value: newTotal.toString(),
-        type: 'number_decimal'
-      }
-    };
-
-    let result;
-    if (metafieldId) {
-      // Update existing
-      result = await client.put({
-        path: `products/${productId}/metafields/${metafieldId}`,
-        data: metafieldData
-      });
-    } else {
-      // Create new
-      result = await client.post({
-        path: `products/${productId}/metafields`,
-        data: metafieldData
-      });
-    }
-
-    console.log(`✅ METAFIELD ${metafieldId ? 'UPDATED' : 'CREATED'} for product ${productId}: ${currentTotal} + ${newDonationAmount} = ${newTotal}`);
-    return newTotal;
-
+    // Respond 200 quickly so Shopify doesn’t retry unnecessarily
+    res.status(200).send("ok");
   } catch (error) {
-    console.error('❌ Metafield update error:', error);
-    throw error;
+    console.error("❌ Error handling orders/paid webhook:", error);
+    // Let Shopify retry on 500 – but our handler is idempotent
+    res.status(500).send("Error");
   }
-}
-
-/**
- * Helper function to get session for a shop
- */
-async function getSessionForShop(shopDomain) {
-  try {
-    // Import shopify instance from your shopify.js file
-    const shopifyModule = await import("./shopify.js");
-    const shopify = shopifyModule.default;
-
-    // Use the session storage from Shopify CLI
-    const sessions = await shopify.config.sessionStorage.findSessionsByShop(shopDomain);
-
-    // Return the most recent active session
-    if (sessions && sessions.length > 0) {
-      // Find the session with the most scopes (usually the offline session)
-      const offlineSession = sessions.find(session => session.isOnline === false);
-      return offlineSession || sessions[0];
-    }
-
-    return null;
-  } catch (error) {
-    console.error("Error getting session:", error);
-    return null;
-  }
-}
+});
 
 export default router;
