@@ -109,7 +109,7 @@ export async function updateProductDonationTotal(productId, newDonationAmount) {
           namespace: "mission_global_integration",
           key: "donation_total_value",
           value: updatedTotal.toString(),
-          type: "number_decimal",
+          type: "single_line_text_field",
         },
       ],
     };
