@@ -12,9 +12,10 @@ topics = ["orders/paid"]
 uri = "/api/webhooks/orders/paid"
 
 [access_scopes]
-scopes = "read_orders,read_products,write_products"
+scopes = "read_orders,read_products,write_products,read_reports"
 optional_scopes = []
 use_legacy_install_flow = false
 
 [auth]
 redirect_urls = ["https://giving-thermometer.onrender.com/api/auth/callback"]
+

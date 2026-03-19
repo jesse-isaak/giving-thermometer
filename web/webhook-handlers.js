@@ -1,7 +1,4 @@
 // webhook-handlers.js
-// Automatic total comes from Shopify product sales
-// Manual total is stored separately in metafields
-
 const SHOP_DOMAIN = "pentecostal-assemblies-of-canada.myshopify.com";
 const ADMIN_API_VERSION = "2023-10";
 const ADMIN_API_URL = `https://${SHOP_DOMAIN}/admin/api/${ADMIN_API_VERSION}/graphql.json`;
@@ -22,17 +19,22 @@ async function callAdminGraphQL(query, variables = {}) {
     body: JSON.stringify({ query, variables }),
   });
 
+  const text = await res.text();
+  let json = {};
+  try {
+    json = JSON.parse(text);
+  } catch {
+    throw new Error(`Non-JSON response: ${text}`);
+  }
+
   if (!res.ok) {
-    const text = await res.text();
-    console.error("Admin GraphQL HTTP error:", res.status, text);
+    console.error("Admin GraphQL HTTP error:", res.status, json);
     throw new Error(`Admin GraphQL HTTP ${res.status}`);
   }
 
-  const json = await res.json();
-
   if (json.errors) {
     console.error("Admin GraphQL errors:", JSON.stringify(json.errors, null, 2));
-    throw new Error("Admin GraphQL returned errors");
+    throw new Error(JSON.stringify(json.errors));
   }
 
   return json;
@@ -93,55 +95,60 @@ async function setProductMetafields(productId, fields) {
   const userErrors = result.data?.metafieldsSet?.userErrors || [];
 
   if (userErrors.length) {
-    console.error("Metafield update userErrors:", userErrors);
     throw new Error(JSON.stringify(userErrors));
   }
 
   return result.data?.metafieldsSet?.metafields || [];
 }
 
-/**
- * Pull automatic donation total from Shopify product sales.
- *
- * NOTE:
- * This uses totalSales on the product object.
- * If your donation product is $1 per unit, this should usually align closely to sales.
- * If you specifically need net sales after refunds/discounts exactly as shown in analytics,
- * we may need a different query/reporting approach.
- */
 export async function getShopifyAutomaticDonationTotal(productId) {
+  const shopifyQl = `
+FROM sales
+SHOW net_sales
+WHERE product_id = ${productId}
+SINCE startOfDay(-500d) UNTIL today
+`;
+
   const query = `
-    query getProductSales($id: ID!) {
-      product(id: $id) {
-        id
-        totalSales
+    query getNetSales($query: String!) {
+      shopifyqlQuery(query: $query) {
+        tableData {
+          columns {
+            name
+            dataType
+            displayName
+          }
+          rows
+        }
+        parseErrors
       }
     }
   `;
 
-  const variables = {
-    id: `gid://shopify/Product/${productId}`,
-  };
+  const result = await callAdminGraphQL(query, { query: shopifyQl });
+  const payload = result.data?.shopifyqlQuery;
 
-  const result = await callAdminGraphQL(query, variables);
-  const totalSales = result.data?.product?.totalSales ?? 0;
-  const parsed = parseFloat(totalSales);
+  if (payload?.parseErrors?.length) {
+    throw new Error(JSON.stringify(payload.parseErrors));
+  }
+
+  const rows = payload?.tableData?.rows || [];
+
+  if (!rows.length || !rows[0]?.length) {
+    return 0;
+  }
+
+  const raw = rows[0][0];
+  const parsed = parseFloat(raw);
   return Number.isNaN(parsed) ? 0 : parsed;
 }
 
-/**
- * Sync the automatic donation total metafield from Shopify sales.
- */
 export async function syncProductDonationTotalFromShopify(productId) {
   const automaticTotal = await getShopifyAutomaticDonationTotal(productId);
 
   await setProductMetafields(productId, {
     donation_total_value: automaticTotal,
   });
-
-  console.log(
-    `✅ Synced automatic donation total for product ${productId}: ${automaticTotal}`
-  );
 
   return automaticTotal;
 }
@@ -166,25 +173,12 @@ export async function setManualDonationTotal(productId, manualAmount) {
     manual_donation_total: manualAmount,
   });
 
-  console.log(
-    `✅ Set manual donation total for product ${productId}: ${manualAmount}`
-  );
-
   return manualAmount;
 }
 
-/**
- * orders/paid webhook:
- * Instead of incrementing, just resync from Shopify sales.
- */
 export async function handleOrderPaid(orderData) {
   try {
-    console.log(`Processing order ${orderData.id} for donation sync`);
-
-    if (!Array.isArray(orderData.line_items)) {
-      console.warn("No line_items on order:", orderData.id);
-      return;
-    }
+    if (!Array.isArray(orderData.line_items)) return;
 
     const productIds = [
       ...new Set(
@@ -197,8 +191,6 @@ export async function handleOrderPaid(orderData) {
     for (const productId of productIds) {
       await syncProductDonationTotalFromShopify(productId);
     }
-
-    console.log(`Successfully synced donation totals for order ${orderData.id}`);
   } catch (error) {
     console.error(`Error processing donation for order ${orderData.id}:`, error);
     throw error;
