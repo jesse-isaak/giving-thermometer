@@ -1,14 +1,13 @@
 // webhook-handlers.js
-// Uses direct Admin GraphQL calls with the offline token from env
+// Automatic total comes from Shopify product sales
+// Manual total is stored separately in metafields
 
 const SHOP_DOMAIN = "pentecostal-assemblies-of-canada.myshopify.com";
 const ADMIN_API_VERSION = "2023-10";
 const ADMIN_API_URL = `https://${SHOP_DOMAIN}/admin/api/${ADMIN_API_VERSION}/graphql.json`;
 const ACCESS_TOKEN = process.env.SHOPIFY_ADMIN_API_ACCESS_TOKEN;
+const NAMESPACE = "mission_global_integration";
 
-/**
- * Helper: Call Shopify Admin GraphQL API using fetch + offline token
- */
 async function callAdminGraphQL(query, variables = {}) {
   if (!ACCESS_TOKEN) {
     throw new Error("SHOPIFY_ADMIN_API_ACCESS_TOKEN is not set in environment");
@@ -39,137 +38,169 @@ async function callAdminGraphQL(query, variables = {}) {
   return json;
 }
 
+async function getProductMetafields(productId) {
+  const query = `
+    query getProductMetafields($id: ID!) {
+      product(id: $id) {
+        donationTotal: metafield(namespace: "${NAMESPACE}", key: "donation_total_value") {
+          value
+        }
+        manualDonationTotal: metafield(namespace: "${NAMESPACE}", key: "manual_donation_total") {
+          value
+        }
+      }
+    }
+  `;
+
+  const variables = {
+    id: `gid://shopify/Product/${productId}`,
+  };
+
+  const result = await callAdminGraphQL(query, variables);
+  const product = result.data?.product;
+
+  return {
+    donationTotal: parseFloat(product?.donationTotal?.value || "0") || 0,
+    manualDonationTotal: parseFloat(product?.manualDonationTotal?.value || "0") || 0,
+  };
+}
+
+async function setProductMetafields(productId, fields) {
+  const metafields = Object.entries(fields).map(([key, value]) => ({
+    ownerId: `gid://shopify/Product/${productId}`,
+    namespace: NAMESPACE,
+    key,
+    value: String(value),
+    type: "single_line_text_field",
+  }));
+
+  const mutation = `
+    mutation metafieldsSet($metafields: [MetafieldsSetInput!]!) {
+      metafieldsSet(metafields: $metafields) {
+        metafields {
+          key
+          value
+        }
+        userErrors {
+          field
+          message
+        }
+      }
+    }
+  `;
+
+  const result = await callAdminGraphQL(mutation, { metafields });
+  const userErrors = result.data?.metafieldsSet?.userErrors || [];
+
+  if (userErrors.length) {
+    console.error("Metafield update userErrors:", userErrors);
+    throw new Error(JSON.stringify(userErrors));
+  }
+
+  return result.data?.metafieldsSet?.metafields || [];
+}
+
 /**
- * Handles order payment webhook to update donation totals
+ * Pull automatic donation total from Shopify product sales.
+ *
+ * NOTE:
+ * This uses totalSales on the product object.
+ * If your donation product is $1 per unit, this should usually align closely to sales.
+ * If you specifically need net sales after refunds/discounts exactly as shown in analytics,
+ * we may need a different query/reporting approach.
+ */
+export async function getShopifyAutomaticDonationTotal(productId) {
+  const query = `
+    query getProductSales($id: ID!) {
+      product(id: $id) {
+        id
+        totalSales
+      }
+    }
+  `;
+
+  const variables = {
+    id: `gid://shopify/Product/${productId}`,
+  };
+
+  const result = await callAdminGraphQL(query, variables);
+  const totalSales = result.data?.product?.totalSales ?? 0;
+  const parsed = parseFloat(totalSales);
+  return Number.isNaN(parsed) ? 0 : parsed;
+}
+
+/**
+ * Sync the automatic donation total metafield from Shopify sales.
+ */
+export async function syncProductDonationTotalFromShopify(productId) {
+  const automaticTotal = await getShopifyAutomaticDonationTotal(productId);
+
+  await setProductMetafields(productId, {
+    donation_total_value: automaticTotal,
+  });
+
+  console.log(
+    `✅ Synced automatic donation total for product ${productId}: ${automaticTotal}`
+  );
+
+  return automaticTotal;
+}
+
+export async function getCurrentDonationTotal(productId) {
+  const { donationTotal } = await getProductMetafields(productId);
+  return donationTotal;
+}
+
+export async function getManualDonationTotal(productId) {
+  const { manualDonationTotal } = await getProductMetafields(productId);
+  return manualDonationTotal;
+}
+
+export async function getDisplayDonationTotal(productId) {
+  const { donationTotal, manualDonationTotal } = await getProductMetafields(productId);
+  return donationTotal + manualDonationTotal;
+}
+
+export async function setManualDonationTotal(productId, manualAmount) {
+  await setProductMetafields(productId, {
+    manual_donation_total: manualAmount,
+  });
+
+  console.log(
+    `✅ Set manual donation total for product ${productId}: ${manualAmount}`
+  );
+
+  return manualAmount;
+}
+
+/**
+ * orders/paid webhook:
+ * Instead of incrementing, just resync from Shopify sales.
  */
 export async function handleOrderPaid(orderData) {
   try {
-    console.log(`Processing order ${orderData.id} for donation tracking`);
+    console.log(`Processing order ${orderData.id} for donation sync`);
 
-    const productDonations = {};
-
-    if (!orderData.line_items || !Array.isArray(orderData.line_items)) {
+    if (!Array.isArray(orderData.line_items)) {
       console.warn("No line_items on order:", orderData.id);
       return;
     }
 
-    orderData.line_items.forEach((item) => {
-      const productId = item.product_id && item.product_id.toString();
-      const quantity = item.quantity || 0;
-      const donationAmount = quantity; // $1 per unit → quantity = donation
+    const productIds = [
+      ...new Set(
+        orderData.line_items
+          .map((item) => item.product_id?.toString())
+          .filter(Boolean)
+      ),
+    ];
 
-      if (productId) {
-        productDonations[productId] =
-          (productDonations[productId] || 0) + donationAmount;
-      }
-    });
-
-    for (const [productId, donationAmount] of Object.entries(
-      productDonations
-    )) {
-      await updateProductDonationTotal(productId, donationAmount);
+    for (const productId of productIds) {
+      await syncProductDonationTotalFromShopify(productId);
     }
 
-    console.log(`Successfully updated donation totals for order ${orderData.id}`);
+    console.log(`Successfully synced donation totals for order ${orderData.id}`);
   } catch (error) {
     console.error(`Error processing donation for order ${orderData.id}:`, error);
     throw error;
-  }
-}
-
-/**
- * Updates the donation total metafield for a specific product
- */
-export async function updateProductDonationTotal(productId, newDonationAmount) {
-  try {
-    const currentTotal = await getCurrentDonationTotal(productId);
-    const updatedTotal = currentTotal + newDonationAmount;
-
-    const metafieldMutation = `
-      mutation metafieldsSet($metafields: [MetafieldsSetInput!]!) {
-        metafieldsSet(metafields: $metafields) {
-          metafields {
-            id
-            namespace
-            key
-            value
-          }
-          userErrors {
-            field
-            message
-          }
-        }
-      }
-    `;
-
-    const variables = {
-      metafields: [
-        {
-          ownerId: `gid://shopify/Product/${productId}`,
-          namespace: "mission_global_integration",
-          key: "donation_total_value",
-          value: updatedTotal.toString(),
-          type: "single_line_text_field",
-        },
-      ],
-    };
-
-    const result = await callAdminGraphQL(metafieldMutation, variables);
-    const userErrors =
-      result.data?.metafieldsSet?.userErrors ||
-      result.body?.data?.metafieldsSet?.userErrors ||
-      [];
-
-    if (userErrors.length > 0) {
-      console.error("Metafield update userErrors:", userErrors);
-      throw new Error(JSON.stringify(userErrors));
-    }
-
-    console.log(
-      `✅ METAFIELD UPDATED for product ${productId}: ${currentTotal} + ${newDonationAmount} = ${updatedTotal}`
-    );
-    return updatedTotal;
-  } catch (error) {
-    console.error(
-      `❌ Error updating donation total for product ${productId}:`,
-      error
-    );
-    throw error;
-  }
-}
-
-/**
- * Gets the current donation total from the product's metafield
- */
-export async function getCurrentDonationTotal(productId) {
-  try {
-    const query = `
-      query getProductMetafield($id: ID!) {
-        product(id: $id) {
-          metafield(namespace: "mission_global_integration", key: "donation_total_value") {
-            value
-          }
-        }
-      }
-    `;
-
-    const variables = {
-      id: `gid://shopify/Product/${productId}`,
-    };
-
-    const result = await callAdminGraphQL(query, variables);
-    const metafieldValue =
-      result.data?.product?.metafield?.value ||
-      result.body?.data?.product?.metafield?.value;
-
-    const parsed = metafieldValue ? parseFloat(metafieldValue) : 0;
-    if (Number.isNaN(parsed)) return 0;
-    return parsed;
-  } catch (error) {
-    console.error(
-      `❌ Error getting current donation total for product ${productId}:`,
-      error
-    );
-    return 0;
   }
 }

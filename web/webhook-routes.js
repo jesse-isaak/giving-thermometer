@@ -1,14 +1,17 @@
-// webhook-routes.js - ES Module version for Shopify CLI
+// webhook-routes.js
 import express from "express";
-import { handleOrderPaid, updateProductDonationTotal } from "./webhook-handlers.js";
+import {
+  handleOrderPaid,
+  syncProductDonationTotalFromShopify,
+  setManualDonationTotal,
+  getDisplayDonationTotal,
+  getCurrentDonationTotal,
+  getManualDonationTotal,
+} from "./webhook-handlers.js";
 
 const router = express.Router();
 
-/**
- * Health check endpoint
- */
 router.get("/api/webhooks/health", (req, res) => {
-  console.log("Health endpoint hit!");
   res.status(200).json({
     status: "healthy",
     timestamp: new Date().toISOString(),
@@ -17,73 +20,107 @@ router.get("/api/webhooks/health", (req, res) => {
 });
 
 /**
- * Simple test endpoint
+ * Manual sync from Shopify sales
  */
-router.post("/api/webhooks/test/simple", async (req, res) => {
-  console.log("Simple test endpoint hit!", req.body);
-
+router.post("/api/webhooks/test/donation-sync", async (req, res) => {
   try {
-    const { productId, donationAmount } = req.body;
+    const { productId } = req.body;
 
-    res.status(200).json({
-      message: "Simple test successful - no Shopify API calls made",
-      productId,
-      donationAmount: parseFloat(donationAmount),
-      mockTotal: parseFloat(donationAmount),
-    });
-  } catch (error) {
-    console.error("Simple test error:", error);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-/**
- * Manual donation update for testing
- */
-router.post("/api/webhooks/test/donation-update", async (req, res) => {
-  console.log("Test donation endpoint hit!", req.body);
-
-  try {
-    const { productId, donationAmount } = req.body;
-
-    if (!productId || !donationAmount) {
+    if (!productId) {
       return res.status(400).json({
-        error: "Missing required fields: productId, donationAmount",
+        error: "Missing required field: productId",
       });
     }
 
-    const newTotal = await updateProductDonationTotal(productId, parseFloat(donationAmount));
+    const automaticTotal = await syncProductDonationTotalFromShopify(productId);
+    const manualTotal = await getManualDonationTotal(productId);
+    const displayTotal = automaticTotal + manualTotal;
 
     res.status(200).json({
-      message: "Test donation update successful",
+      message: "Donation total synced from Shopify successfully",
       productId,
-      donationAmount,
-      newTotal,
+      automaticTotal,
+      manualTotal,
+      displayTotal,
     });
   } catch (error) {
-    console.error("Test endpoint error:", error);
+    console.error("Donation sync error:", error);
     res.status(500).json({ error: error.message });
   }
 });
 
 /**
- * Shopify orders/paid webhook handler
+ * Manual donation edit route
+ */
+router.post("/api/webhooks/test/manual-donation-update", async (req, res) => {
+  try {
+    const { productId, manualDonationAmount } = req.body;
+
+    if (!productId || manualDonationAmount === undefined) {
+      return res.status(400).json({
+        error: "Missing required fields: productId, manualDonationAmount",
+      });
+    }
+
+    const manualTotal = await setManualDonationTotal(
+      productId,
+      parseFloat(manualDonationAmount)
+    );
+
+    const automaticTotal = await getCurrentDonationTotal(productId);
+    const displayTotal = automaticTotal + manualTotal;
+
+    res.status(200).json({
+      message: "Manual donation total updated successfully",
+      productId,
+      automaticTotal,
+      manualTotal,
+      displayTotal,
+    });
+  } catch (error) {
+    console.error("Manual donation update error:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * Read totals route
+ */
+router.get("/api/webhooks/test/donation-totals/:productId", async (req, res) => {
+  try {
+    const { productId } = req.params;
+
+    const automaticTotal = await getCurrentDonationTotal(productId);
+    const manualTotal = await getManualDonationTotal(productId);
+    const displayTotal = await getDisplayDonationTotal(productId);
+
+    res.status(200).json({
+      productId,
+      automaticTotal,
+      manualTotal,
+      displayTotal,
+    });
+  } catch (error) {
+    console.error("Donation totals read error:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * Shopify orders/paid webhook
  */
 router.post("/api/webhooks/orders/paid", async (req, res) => {
   try {
-    console.log("🛎️ Order paid webhook hit!");
     const orderData = req.body;
 
     if (!orderData || !orderData.id) {
-      console.error("Invalid order payload:", orderData);
       return res.status(400).send("Invalid payload");
     }
 
     await handleOrderPaid(orderData);
-
     res.status(200).send("ok");
   } catch (error) {
-    console.error("❌ Error handling orders/paid webhook:", error);
+    console.error("Error handling orders/paid webhook:", error);
     res.status(500).send("Error");
   }
 });
