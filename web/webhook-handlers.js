@@ -1,6 +1,6 @@
 // webhook-handlers.js
 const SHOP_DOMAIN = "pentecostal-assemblies-of-canada.myshopify.com";
-const ADMIN_API_VERSION = "2023-10";
+const ADMIN_API_VERSION = "2025-10";
 const ADMIN_API_URL = `https://${SHOP_DOMAIN}/admin/api/${ADMIN_API_VERSION}/graphql.json`;
 const ACCESS_TOKEN = process.env.SHOPIFY_ADMIN_API_ACCESS_TOKEN;
 const NAMESPACE = "mission_global_integration";
