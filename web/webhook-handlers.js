@@ -104,9 +104,11 @@ async function setProductMetafields(productId, fields) {
 export async function getShopifyAutomaticDonationTotal(productId) {
   const shopifyQl = `
 FROM sales
-SHOW net_sales
-WHERE product_id = ${productId}
+SHOW product_id, product_title, net_sales
+GROUP BY product_id, product_title
 SINCE startOfDay(-500d) UNTIL today
+ORDER BY net_sales DESC
+LIMIT 50
 `;
 
   const query = `
@@ -132,14 +134,21 @@ SINCE startOfDay(-500d) UNTIL today
     throw new Error(JSON.stringify(payload.parseErrors));
   }
 
+  console.log(
+    "ShopifyQL rows:",
+    JSON.stringify(payload?.tableData?.rows || [], null, 2)
+  );
+
   const rows = payload?.tableData?.rows || [];
 
-  if (!rows.length || !rows[0]?.length) {
+  // Find the row matching the productId we passed in
+  const match = rows.find((row) => String(row[0]) === String(productId));
+
+  if (!match) {
     return 0;
   }
 
-  const raw = rows[0][0];
-  const parsed = parseFloat(raw);
+  const parsed = parseFloat(match[2]);
   return Number.isNaN(parsed) ? 0 : parsed;
 }
 
