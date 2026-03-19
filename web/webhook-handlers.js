@@ -108,7 +108,7 @@ SHOW product_id, product_title, net_sales
 GROUP BY product_id, product_title
 SINCE startOfDay(-500d) UNTIL today
 ORDER BY net_sales DESC
-LIMIT 50
+LIMIT 250
 `;
 
   const query = `
@@ -134,21 +134,18 @@ LIMIT 50
     throw new Error(JSON.stringify(payload.parseErrors));
   }
 
-  console.log(
-    "ShopifyQL rows:",
-    JSON.stringify(payload?.tableData?.rows || [], null, 2)
-  );
-
   const rows = payload?.tableData?.rows || [];
 
-  // Find the row matching the productId we passed in
-  const match = rows.find((row) => String(row[0]) === String(productId));
+  const match = rows.find(
+    (row) => String(row.product_id) === String(productId)
+  );
 
   if (!match) {
+    console.warn(`No ShopifyQL sales row found for product ${productId}`);
     return 0;
   }
 
-  const parsed = parseFloat(match[2]);
+  const parsed = parseFloat(match.net_sales);
   return Number.isNaN(parsed) ? 0 : parsed;
 }
 
