@@ -126,3 +126,11 @@ router.post("/api/webhooks/orders/paid", async (req, res) => {
 });
 
 export default router;
+
+/** render runtime version check */
+router.get("/api/webhooks/test/version-check", (req, res) => {
+  res.status(200).json({
+    adminApiVersion: "2025-10",
+    message: "Runtime version check",
+  });
+});
